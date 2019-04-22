@@ -1,13 +1,13 @@
 import { gql } from 'apollo-boost'
 
 import { FragmentCheckout } from './FragmentCheckout'
-import { FragmentUserError } from './FragmentUserError'
+import { FragmentCheckoutUserError } from './FragmentCheckoutUserError'
 
 export const MutationCheckoutLineItemsReplace = gql`
   mutation($checkoutId: ID!, $lineItems: [CheckoutLineItemInput!]!) {
     checkoutLineItemsReplace(checkoutId: $checkoutId, lineItems: $lineItems) {
       userErrors {
-        ...FragmentUserError
+        ...FragmentCheckoutUserError
       }
       checkout {
         ...FragmentCheckout
@@ -16,5 +16,5 @@ export const MutationCheckoutLineItemsReplace = gql`
   }
 
   ${FragmentCheckout}
-  ${FragmentUserError}
+  ${FragmentCheckoutUserError}
 `
