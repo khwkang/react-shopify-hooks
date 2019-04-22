@@ -10,7 +10,7 @@ import {
   useShopifyCustomerAccessTokenWithContext,
   useShopifyCustomerWithContext,
   useShopifyProductVariantWithContext,
-  useShopifyReducer,
+  useShopifyPersistedReducer,
 } from '../hooksWithContext'
 
 import {
@@ -47,6 +47,13 @@ const renderHookWithClient = (callback, client = defaultClient) =>
     wrapper: props => <ShopifyProviderWithContext client={client} {...props} />,
   })
 
+// Cleanup persisted reducer state
+afterEach(() => {
+  const { result } = renderHookWithClient(() => useShopifyPersistedReducer())
+  const [_state, dispatch] = result.current
+
+  dispatch({ type: 'RESET' })
+})
 /***
  * useShopifyCustomerAccessTokenWithContext
  */
@@ -149,7 +156,7 @@ describe('useShopifyProductVariantWithContext', () => {
     test('addToCheckout should add the product variant to the checkout', async () => {
       const { result, waitForNextUpdate } = renderHookWithClient(() => ({
         productVariant: useShopifyProductVariantWithContext('id'),
-        reducer: useShopifyReducer(),
+        reducer: useShopifyPersistedReducer(),
       }))
 
       expect(result.current.reducer[0].checkoutLineItems).toHaveLength(0)
