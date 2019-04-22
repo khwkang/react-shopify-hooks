@@ -1,5 +1,9 @@
-import React, { useEffect, useReducer, useContext } from 'react'
-import { compose, get, merge } from 'lodash/fp'
+import React, { useEffect, useCallback, useContext } from 'react'
+import { compose, get, merge, isEmpty } from 'lodash/fp'
+import {
+  useLocalStorageReducer,
+  useSessionStorageState,
+} from 'react-storage-hooks'
 
 import { getNodes } from './lib'
 import {
@@ -48,15 +52,29 @@ const reducer = (state, action) => {
   }
 }
 
-const ReducerContext = React.createContext()
+const PersistedReducerContext = React.createContext()
 
-const ReducerProvider = ({ children, persist = true }) => {
-  const hookedReducer = useReducer(reducer, initialState)
+const InMemoryReducerContext = React.createContext()
 
+const PersistedReducerProvider = ({ children, persist = true }) => {
+  const hookedReducer = useLocalStorageReducer(
+    'react-shopify-hooks',
+    reducer,
+    initialState
+  )
   return (
-    <ReducerContext.Provider value={hookedReducer}>
+    <PersistedReducerContext.Provider value={hookedReducer}>
       {children}
-    </ReducerContext.Provider>
+    </PersistedReducerContext.Provider>
+  )
+}
+
+const InMemoryReducerProvider = ({ children }) => {
+  const hookedReducer = useSessionStorageState('sessionIsNew', true)
+  return (
+    <InMemoryReducerContext.Provider value={hookedReducer}>
+      {children}
+    </InMemoryReducerContext.Provider>
   )
 }
 
@@ -67,17 +85,28 @@ const ReducerProvider = ({ children, persist = true }) => {
  * global state.
  */
 export const ShopifyProviderWithContext = ({ persist = true, ...props }) => (
-  <ReducerProvider persist={persist}>
-    <ShopifyProvider {...props} />
-  </ReducerProvider>
+  <InMemoryReducerProvider>
+    <PersistedReducerProvider persist={persist}>
+      <ShopifyProvider {...props} />
+    </PersistedReducerProvider>
+  </InMemoryReducerProvider>
 )
 
 /***
- * useShopifyReducer
+ * useShopifyPersistedReducer
  *
- * Returns the reducer used for managing global state.
+ * Returns the reducer used for managing persisted global state.
  */
-export const useShopifyReducer = () => useContext(ReducerContext)
+export const useShopifyPersistedReducer = () =>
+  useContext(PersistedReducerContext)
+
+/***
+ * useShopifyInMemoryReducer
+ *
+ * Returns the reducer used for managing in memory global state.
+ */
+export const useShopifyInMemoryReducer = () =>
+  useContext(InMemoryReducerContext)
 
 /***
  * useShopifyCustomerAccessTokenWithContext
@@ -90,7 +119,10 @@ export const useShopifyReducer = () => useContext(ReducerContext)
  * saved token expires within 1 day.
  */
 export const useShopifyCustomerAccessTokenWithContext = (autoRenew = true) => {
-  const [{ customerAccessToken }, dispatch] = useShopifyReducer()
+  const [
+    { customerAccessToken, customerAccessTokenExpiresAt },
+    dispatch,
+  ] = useShopifyPersistedReducer()
   const useShopifyCustomerAccessTokenResult = useShopifyCustomerAccessToken(
     customerAccessToken
   )
@@ -101,9 +133,11 @@ export const useShopifyCustomerAccessTokenWithContext = (autoRenew = true) => {
   } = useShopifyCustomerAccessTokenResult
 
   // Renews and sets the global customer access token.
-  const renewToken = async () => {
-    const result = await renewCustomerAccessToken(customerAccessToken)
 
+  const [sessionIsNew, setSessionIsNew] = useShopifyInMemoryReducer()
+
+  const renewToken = useCallback(async () => {
+    const result = await renewCustomerAccessToken(customerAccessToken)
     if (result.data) {
       const {
         data: { accessToken, expiresAt },
@@ -113,13 +147,39 @@ export const useShopifyCustomerAccessTokenWithContext = (autoRenew = true) => {
         type: 'SET_CUSTOMER_ACCESS_TOKEN',
         payload: { accessToken, expiresAt },
       })
+
+      return result
     }
 
-    return result
-  }
+    await signOut()
 
-  // TODO: Add auto-renew logic here.
-  // - If wihin 1 day (duration undecided) of expiration, renew token
+    return result
+  }, [customerAccessToken, dispatch, renewCustomerAccessToken, signOut])
+
+  const signOut = useCallback(async () => {
+    if (customerAccessToken) deleteCustomerAccessToken(customerAccessToken)
+    dispatch({ type: 'RESET' })
+    setSessionIsNew(true)
+  }, [
+    customerAccessToken,
+    deleteCustomerAccessToken,
+    dispatch,
+    setSessionIsNew,
+  ])
+
+  // Renew access token automatically
+  const renewTokenAutomatically = useCallback(async () => {
+    await renewToken()
+    setSessionIsNew(false)
+    return
+  }, [renewToken, setSessionIsNew])
+
+  useEffect(() => {
+    if (customerAccessToken && sessionIsNew) {
+      renewTokenAutomatically()
+    }
+    return
+  }, [customerAccessToken, renewTokenAutomatically, sessionIsNew])
 
   return merge(useShopifyCustomerAccessTokenResult, {
     customerAccessToken,
@@ -138,6 +198,7 @@ export const useShopifyCustomerAccessTokenWithContext = (autoRenew = true) => {
             type: 'SET_CUSTOMER_ACCESS_TOKEN',
             payload: { accessToken, expiresAt },
           })
+          setSessionIsNew(false)
         }
 
         return result
@@ -147,10 +208,7 @@ export const useShopifyCustomerAccessTokenWithContext = (autoRenew = true) => {
       renewToken,
 
       // Deletes the global customer access token and resets the global state.
-      signOut: async () => {
-        if (customerAccessToken) deleteCustomerAccessToken(customerAccessToken)
-        dispatch({ type: 'RESET' })
-      },
+      signOut,
     },
   })
 }
@@ -162,32 +220,35 @@ export const useShopifyCustomerAccessTokenWithContext = (autoRenew = true) => {
  * globally to allow implicit access to the checkout in other hooks.
  */
 export const useShopifyCheckoutWithContext = (autoCreate = true) => {
-  const [{ checkoutId }, dispatch] = useShopifyReducer()
+  const [{ checkoutId }, dispatch] = useShopifyPersistedReducer()
   const useShopifyCheckoutResult = useShopifyCheckout(checkoutId)
   const {
     actions: { createCheckout },
   } = useShopifyCheckoutResult
 
   // Creates and sets a new global checkout.
-  const createCheckoutWithContext = async (...args) => {
-    const result = await createCheckout(...args)
+  const createCheckoutWithContext = useCallback(
+    async (...args) => {
+      const result = await createCheckout(...args)
 
-    if (result.data) {
-      const {
-        data: { id },
-      } = result
+      if (result.data) {
+        const {
+          data: { id },
+        } = result
 
-      dispatch({ type: 'SET_CHECKOUT_ID', payload: id })
-    }
+        dispatch({ type: 'SET_CHECKOUT_ID', payload: id })
+      }
 
-    return result
-  }
+      return result
+    },
+    [createCheckout, dispatch]
+  )
 
   // If autoCreate is true, automatically create a new checkout if one is not
   // present.
   useEffect(() => {
     if (autoCreate && !checkoutId) createCheckoutWithContext()
-  }, [checkoutId])
+  }, [autoCreate, checkoutId, createCheckoutWithContext])
 
   return merge(useShopifyCheckoutResult, {
     actions: {
@@ -204,7 +265,7 @@ export const useShopifyCheckoutWithContext = (autoCreate = true) => {
  * global checkout-related functions.
  */
 export const useShopifyProductVariantWithContext = variantId => {
-  const [{ checkoutLineItems }, dispatch] = useShopifyReducer()
+  const [{ checkoutLineItems }, dispatch] = useShopifyPersistedReducer()
   const useShopifyProductVariantResult = useShopifyProductVariant(variantId)
   const {
     actions: { lineItemsReplace },
@@ -216,6 +277,9 @@ export const useShopifyProductVariantWithContext = variantId => {
       addToCheckout: async (quantity = 1, customAttributes) => {
         // TODO: Need a proper merge w/ quantity checking
         const newLineItem = { variantId, quantity, customAttributes }
+
+        // TODO: fix checkoutLineItems returning incompatible object
+
         const mergedLineItems = [...checkoutLineItems, newLineItem]
         const checkout = await lineItemsReplace(mergedLineItems)
 
@@ -236,7 +300,7 @@ export const useShopifyProductVariantWithContext = variantId => {
  * useShopifyCustomer hooked up to global state.
  */
 export const useShopifyCustomerWithContext = () => {
-  const [{ customerAccessToken }, dispatch] = useShopifyReducer()
+  const [{ customerAccessToken }, dispatch] = useShopifyPersistedReducer()
   const useShopifyCustomerResult = useShopifyCustomer(customerAccessToken)
   const {
     actions: { activateCustomer, resetCustomer, resetCustomerByUrl },

@@ -13,5 +13,6 @@ export {
   useShopifyCustomerAccessTokenWithContext,
   useShopifyCustomerWithContext,
   useShopifyProductVariantWithContext,
-  useShopifyReducer,
+  useShopifyPersistedReducer,
+  useShopifyInMemoryReducer,
 } from './hooksWithContext'
