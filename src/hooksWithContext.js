@@ -1,11 +1,11 @@
 import React, { useEffect, useCallback, useContext } from 'react'
-import { compose, get, merge, isEmpty } from 'lodash/fp'
+import { merge, mergeWith, map, includes } from 'lodash/fp'
+
 import {
   useLocalStorageReducer,
   useSessionStorageState,
 } from 'react-storage-hooks'
 
-import { getNodes } from './lib'
 import {
   ShopifyProvider,
   useShopifyCheckout,
@@ -275,20 +275,41 @@ export const useShopifyProductVariantWithContext = variantId => {
     actions: {
       // Adds the product variant to the global checkout.
       addToCheckout: async (quantity = 1, customAttributes) => {
-        // TODO: Need a proper merge w/ quantity checking
         const newLineItem = { variantId, quantity, customAttributes }
 
-        // TODO: fix checkoutLineItems returning incompatible object
+        let nextLineItems = null
+        let duplicateResolved = false
 
-        const mergedLineItems = [...checkoutLineItems, newLineItem]
-        const checkout = await lineItemsReplace(mergedLineItems)
+        // Combine and add up the quantity for duplicate line items
+        let mergedLineItems = map(lineItem => {
+          if (includes(variantId, lineItem)) {
+            duplicateResolved = true
+            return mergeWith(
+              (objValue, srcValue, key) => {
+                if (key === 'quantity') {
+                  return objValue + srcValue
+                }
+              },
+              lineItem,
+              newLineItem
+            )
+          } else {
+            return lineItem
+          }
+        }, checkoutLineItems)
 
-        const lineItems = compose(
-          getNodes,
-          get('data.lineItems')
-        )(checkout)
+        if (duplicateResolved) {
+          nextLineItems = mergedLineItems
+        } else {
+          nextLineItems = [newLineItem, ...mergedLineItems]
+        }
 
-        dispatch({ type: 'SET_CHECKOUT_LINE_ITEMS', payload: lineItems })
+        await lineItemsReplace(nextLineItems)
+
+        dispatch({
+          type: 'SET_CHECKOUT_LINE_ITEMS',
+          payload: nextLineItems,
+        })
       },
     },
   })
